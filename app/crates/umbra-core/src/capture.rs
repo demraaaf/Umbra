@@ -1,5 +1,6 @@
 //! Screen capture through Windows Graphics Capture.
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -11,12 +12,27 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D};
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_GDI_COMPATIBLE,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
+};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIDevice, IDXGIOutput5,
+    IDXGIOutputDuplication, IDXGISurface1,
+};
 use windows::Win32::Graphics::Gdi::{
-    DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
-    HDC, HMONITOR, MONITORINFOEXW,
+    DEVMODEW, DeleteObject, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW,
+    GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+};
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, HICON,
+    ICONINFO,
 };
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -230,10 +246,10 @@ pub enum CaptureTarget {
     Window(isize),
 }
 
-/// A captured frame. The texture belongs to the capture frame pool and is returned to it
-/// when this value is dropped.
+/// A captured frame. With Windows Graphics Capture the texture belongs to the capture frame
+/// pool and is returned to it when this value is dropped.
 pub struct CapturedFrame {
-    frame: Direct3D11CaptureFrame,
+    frame: Option<Direct3D11CaptureFrame>,
     pub texture: ID3D11Texture2D,
     pub width: u32,
     pub height: u32,
@@ -258,7 +274,9 @@ impl CapturedFrame {
 
 impl Drop for CapturedFrame {
     fn drop(&mut self) {
-        let _ = self.frame.Close();
+        if let Some(frame) = &self.frame {
+            let _ = frame.Close();
+        }
     }
 }
 
@@ -270,20 +288,46 @@ struct Shared {
     closed: AtomicBool,
 }
 
-pub struct Capture {
-    _item: GraphicsCaptureItem,
+/// Windows Graphics Capture: windows, and screens Desktop Duplication cannot take.
+struct Wgc {
+    item: GraphicsCaptureItem,
     device: IDirect3DDevice,
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
-    shared: Arc<Shared>,
     token: i64,
     closed_token: i64,
     format: DirectXPixelFormat,
+}
+
+/// DXGI Desktop Duplication of a screen. Unlike Windows Graphics Capture it sees a game in
+/// exclusive fullscreen, which skips the desktop compositor: Graphics Capture then only
+/// repeats the last composed picture.
+struct Dupl {
+    context: ID3D11DeviceContext,
+    device: ID3D11Device,
+    dupl: IDXGIOutputDuplication,
+    /// The screen's top-left corner on the desktop, to place the cursor.
+    origin: (i32, i32),
+    /// Draw the cursor in; Desktop Duplication leaves it out.
+    cursor: bool,
+    /// Our copy of the newest picture: the duplicated one must go back before the next.
+    copy: RefCell<Option<ID3D11Texture2D>>,
+}
+
+enum Backend {
+    Wgc(Wgc),
+    Dupl(Dupl),
+}
+
+pub struct Capture {
+    backend: Backend,
+    shared: Arc<Shared>,
     pub width: u32,
     pub height: u32,
 }
 
-// WinRT capture objects are agile; the pool is created free-threaded.
+// WinRT capture objects are agile; the pool is created free-threaded. DXGI and Direct3D
+// objects are free-threaded, the context protected by `SetMultithreadProtected`.
 unsafe impl Send for Capture {}
 
 impl Capture {
@@ -297,6 +341,106 @@ impl Capture {
         max_fps: u32,
         hdr: bool,
     ) -> Result<Self> {
+        let shared = Arc::new(Shared {
+            latest: Mutex::new(None),
+            arrived: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+        });
+        if let CaptureTarget::Monitor(handle) = target {
+            match Dupl::start(gpu, HMONITOR(handle as *mut _), capture_cursor, hdr) {
+                Ok((dupl, (width, height))) => {
+                    return Ok(Self {
+                        backend: Backend::Dupl(dupl),
+                        shared,
+                        width,
+                        height,
+                    });
+                }
+                // A screen on another graphics card (a laptop's built-in screen), or too many
+                // duplications at once: Graphics Capture still works, without fullscreen games.
+                Err(err) => log::warn!("desktop duplication unavailable, using graphics capture: {err:#}"),
+            }
+        }
+        let (wgc, (width, height)) = Wgc::start(gpu, target, capture_cursor, max_fps, hdr, &shared)?;
+        Ok(Self {
+            backend: Backend::Wgc(wgc),
+            shared,
+            width,
+            height,
+        })
+    }
+
+    /// Takes the newest frame, if one arrived since the last call.
+    pub fn take_latest(&self) -> Option<CapturedFrame> {
+        match &self.backend {
+            Backend::Wgc(_) => wgc_take(&self.shared),
+            Backend::Dupl(dupl) => match unsafe { dupl.take(&self.shared) } {
+                Ok(frame) => frame,
+                Err(err) => {
+                    // Lost on a mode change, a fullscreen switch or the secure desktop: the
+                    // recorder starts the capture again.
+                    log::info!("desktop duplication ended: {err}");
+                    self.shared.closed.store(true, Ordering::Relaxed);
+                    None
+                }
+            },
+        }
+    }
+
+    /// Tells Windows the surface changed size (a window was resized). Frames from then on
+    /// have the new size; one or two older-sized frames may still arrive first.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        if let Backend::Wgc(wgc) = &self.backend {
+            wgc.pool.Recreate(
+                &wgc.device,
+                wgc.format,
+                3,
+                windows::Graphics::SizeInt32 {
+                    Width: width as i32,
+                    Height: height as i32,
+                },
+            )?;
+        }
+        self.width = width;
+        self.height = height;
+        Ok(())
+    }
+
+    /// Frames delivered by Windows since capture started.
+    /// Desktop Duplication counts a frame when it is taken, so one tick later.
+    pub fn frames_arrived(&self) -> u64 {
+        self.shared.arrived.load(Ordering::Relaxed)
+    }
+
+    /// Windows ended this capture; it delivers nothing more.
+    pub fn is_closed(&self) -> bool {
+        self.shared.closed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if let Backend::Wgc(wgc) = &self.backend {
+            let _ = wgc.pool.RemoveFrameArrived(wgc.token);
+            let _ = wgc.item.RemoveClosed(wgc.closed_token);
+            let _ = wgc.session.Close();
+            let _ = wgc.pool.Close();
+        }
+        if let Some(frame) = self.shared.latest.lock().unwrap().take() {
+            let _ = frame.Close();
+        }
+    }
+}
+
+impl Wgc {
+    fn start(
+        gpu: &Gpu,
+        target: CaptureTarget,
+        capture_cursor: bool,
+        max_fps: u32,
+        hdr: bool,
+        shared: &Arc<Shared>,
+    ) -> Result<(Self, (u32, u32))> {
         let format = if hdr {
             DirectXPixelFormat::R16G16B16A16Float
         } else {
@@ -325,11 +469,6 @@ impl Capture {
             let pool =
                 Direct3D11CaptureFramePool::CreateFreeThreaded(&d3d_device, format, 3, size)?;
 
-            let shared = Arc::new(Shared {
-                latest: Mutex::new(None),
-                arrived: AtomicU64::new(0),
-                closed: AtomicBool::new(false),
-            });
             let closed_shared = shared.clone();
             let closed_token = item.Closed(&TypedEventHandler::<
                 GraphicsCaptureItem,
@@ -372,86 +511,207 @@ impl Capture {
             }
             session.StartCapture()?;
 
-            Ok(Self {
-                _item: item,
-                device: d3d_device,
-                pool,
-                session,
-                shared,
-                token,
-                closed_token,
-                format,
-                width: size.Width as u32,
-                height: size.Height as u32,
-            })
+            Ok((
+                Self {
+                    item,
+                    device: d3d_device,
+                    pool,
+                    session,
+                    token,
+                    closed_token,
+                    format,
+                },
+                (size.Width as u32, size.Height as u32),
+            ))
         }
-    }
-
-    /// Takes the newest frame, if one arrived since the last call.
-    pub fn take_latest(&self) -> Option<CapturedFrame> {
-        let frame = self.shared.latest.lock().unwrap().take()?;
-        let convert = || -> Result<CapturedFrame> {
-            let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
-            let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
-            let mut desc = D3D11_TEXTURE2D_DESC::default();
-            unsafe { texture.GetDesc(&mut desc) };
-            let size = frame.ContentSize()?;
-            let time = frame.SystemRelativeTime()?;
-            Ok(CapturedFrame {
-                frame: frame.clone(),
-                texture,
-                width: size.Width as u32,
-                height: size.Height as u32,
-                time_100ns: time.Duration,
-                texture_size: (desc.Width, desc.Height),
-            })
-        };
-        match convert() {
-            Ok(captured) => Some(captured),
-            Err(err) => {
-                log::warn!("dropping captured frame: {err:#}");
-                let _ = frame.Close();
-                None
-            }
-        }
-    }
-
-    /// Tells Windows the surface changed size (a window was resized). Frames from then on
-    /// have the new size; one or two older-sized frames may still arrive first.
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-        self.pool.Recreate(
-            &self.device,
-            self.format,
-            3,
-            windows::Graphics::SizeInt32 {
-                Width: width as i32,
-                Height: height as i32,
-            },
-        )?;
-        self.width = width;
-        self.height = height;
-        Ok(())
-    }
-
-    /// Frames delivered by Windows since capture started.
-    pub fn frames_arrived(&self) -> u64 {
-        self.shared.arrived.load(Ordering::Relaxed)
-    }
-
-    /// Windows ended this capture; it delivers nothing more.
-    pub fn is_closed(&self) -> bool {
-        self.shared.closed.load(Ordering::Relaxed)
     }
 }
 
-impl Drop for Capture {
-    fn drop(&mut self) {
-        let _ = self.pool.RemoveFrameArrived(self.token);
-        let _ = self._item.RemoveClosed(self.closed_token);
-        let _ = self.session.Close();
-        let _ = self.pool.Close();
-        if let Some(frame) = self.shared.latest.lock().unwrap().take() {
+fn wgc_take(shared: &Shared) -> Option<CapturedFrame> {
+    let frame = shared.latest.lock().unwrap().take()?;
+    let convert = || -> Result<CapturedFrame> {
+        let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        let size = frame.ContentSize()?;
+        let time = frame.SystemRelativeTime()?;
+        Ok(CapturedFrame {
+            frame: Some(frame.clone()),
+            texture,
+            width: size.Width as u32,
+            height: size.Height as u32,
+            time_100ns: time.Duration,
+            texture_size: (desc.Width, desc.Height),
+        })
+    };
+    match convert() {
+        Ok(captured) => Some(captured),
+        Err(err) => {
+            log::warn!("dropping captured frame: {err:#}");
             let _ = frame.Close();
+            None
+        }
+    }
+}
+
+impl Dupl {
+    /// Fails for a screen on another graphics card than `gpu`'s.
+    fn start(gpu: &Gpu, monitor: HMONITOR, cursor: bool, hdr: bool) -> Result<(Self, (u32, u32))> {
+        unsafe {
+            let adapter = gpu.device.cast::<IDXGIDevice>()?.GetAdapter()?;
+            let output = (0..)
+                .map_while(|i| adapter.EnumOutputs(i).ok())
+                .find(|o| o.GetDesc().is_ok_and(|d| d.Monitor == monitor))
+                .context("the screen is not on the recording graphics card")?;
+            let rect = output.GetDesc()?.DesktopCoordinates;
+            let format = if hdr {
+                DXGI_FORMAT_R16G16B16A16_FLOAT
+            } else {
+                DXGI_FORMAT_B8G8R8A8_UNORM
+            };
+            let dupl = output
+                .cast::<IDXGIOutput5>()?
+                .DuplicateOutput1(&gpu.device, 0, &[format])
+                .context("DuplicateOutput1")?;
+            let mode = dupl.GetDesc().ModeDesc;
+            log::info!("capturing the screen by desktop duplication, {}x{}", mode.Width, mode.Height);
+            Ok((
+                Self {
+                    context: gpu.context.clone(),
+                    device: gpu.device.clone(),
+                    dupl,
+                    origin: (rect.left, rect.top),
+                    // GDI draws only on 8-bit pictures.
+                    // ponytail: no cursor on an HDR screen; draw the pointer shape with a shader if wanted.
+                    cursor: cursor && !hdr,
+                    copy: RefCell::new(None),
+                },
+                (mode.Width, mode.Height),
+            ))
+        }
+    }
+
+    /// The newest picture, if the screen changed since the last call. An error means the
+    /// duplication is lost and has to be started again.
+    unsafe fn take(&self, shared: &Shared) -> windows::core::Result<Option<CapturedFrame>> {
+        unsafe {
+            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut resource = None;
+            match self.dupl.AcquireNextFrame(0, &mut info, &mut resource) {
+                Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
+                other => other?,
+            }
+            let first = shared.arrived.load(Ordering::Relaxed) == 0;
+            // Only the pointer moved: new only when the cursor is drawn in.
+            if info.LastPresentTime == 0 && !first && !self.cursor {
+                self.dupl.ReleaseFrame()?;
+                return Ok(None);
+            }
+            let copied = resource
+                .ok_or_else(|| windows::core::Error::from(E_FAIL))
+                .and_then(|r| r.cast::<ID3D11Texture2D>())
+                .and_then(|source| self.copy_of(&source));
+            self.dupl.ReleaseFrame()?;
+            let (texture, width, height) = copied?;
+            if self.cursor {
+                // A cursor that cannot be drawn leaves the picture as it is.
+                let _ = self.draw_cursor(&texture);
+            }
+            shared.arrived.fetch_add(1, Ordering::Relaxed);
+            let mut now = 0i64;
+            let mut freq = 1i64;
+            let _ = QueryPerformanceCounter(&mut now);
+            let _ = QueryPerformanceFrequency(&mut freq);
+            Ok(Some(CapturedFrame {
+                frame: None,
+                texture,
+                width,
+                height,
+                time_100ns: (now as i128 * 10_000_000 / freq.max(1) as i128) as i64,
+                texture_size: (width, height),
+            }))
+        }
+    }
+
+    /// Copies `source` into our own texture, made again when the size or format changes.
+    /// ponytail: a rotated screen comes out sideways; rotate on copy if anyone records portrait.
+    unsafe fn copy_of(
+        &self,
+        source: &ID3D11Texture2D,
+    ) -> windows::core::Result<(ID3D11Texture2D, u32, u32)> {
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            source.GetDesc(&mut desc);
+            let mut copy = self.copy.borrow_mut();
+            let fits = copy.as_ref().is_some_and(|c| {
+                let mut have = D3D11_TEXTURE2D_DESC::default();
+                c.GetDesc(&mut have);
+                (have.Width, have.Height, have.Format) == (desc.Width, desc.Height, desc.Format)
+            });
+            if !fits {
+                let gdi = self.cursor && desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
+                let wanted = D3D11_TEXTURE2D_DESC {
+                    Width: desc.Width,
+                    Height: desc.Height,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: desc.Format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: if gdi {
+                        D3D11_RESOURCE_MISC_GDI_COMPATIBLE.0 as u32
+                    } else {
+                        0
+                    },
+                };
+                let mut texture = None;
+                self.device.CreateTexture2D(&wanted, None, Some(&mut texture))?;
+                *copy = texture;
+            }
+            let texture = copy.clone().ok_or_else(|| windows::core::Error::from(E_FAIL))?;
+            self.context.CopyResource(&texture, source);
+            Ok((texture, desc.Width, desc.Height))
+        }
+    }
+
+    unsafe fn draw_cursor(&self, texture: &ID3D11Texture2D) -> windows::core::Result<()> {
+        unsafe {
+            let mut cursor = CURSORINFO {
+                cbSize: size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            GetCursorInfo(&mut cursor)?;
+            // Hidden, as in most games.
+            if cursor.flags.0 & CURSOR_SHOWING.0 == 0 || cursor.hCursor.is_invalid() {
+                return Ok(());
+            }
+            let icon = HICON(cursor.hCursor.0);
+            let mut info = ICONINFO::default();
+            GetIconInfo(icon, &mut info)?;
+            let _ = DeleteObject(info.hbmMask.into());
+            if !info.hbmColor.is_invalid() {
+                let _ = DeleteObject(info.hbmColor.into());
+            }
+            let surface: IDXGISurface1 = texture.cast()?;
+            let dc = surface.GetDC(false)?;
+            let _ = DrawIconEx(
+                dc,
+                cursor.ptScreenPos.x - self.origin.0 - info.xHotspot as i32,
+                cursor.ptScreenPos.y - self.origin.1 - info.yHotspot as i32,
+                icon,
+                0,
+                0,
+                0,
+                None,
+                DI_NORMAL,
+            );
+            surface.ReleaseDC(None)
         }
     }
 }

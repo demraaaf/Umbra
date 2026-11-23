@@ -39,7 +39,7 @@ asset protocol. A mock backend (`ui/api/mock.ts`) lets you work on the UI in a b
 ### Capture
 | Feature | Status | Where | Notes |
 | --- | --- | --- | --- |
-| Windows.Graphics.Capture (WGC), GPU-resident frames | Complete | `core/capture.rs`, `core/d3d.rs` | Free-threaded pool keeps the newest frame. No DXGI Desktop Duplication fallback |
+| Screen capture, GPU-resident frames | Complete | `core/capture.rs`, `core/d3d.rs` | Screens use DXGI Desktop Duplication (sees exclusive-fullscreen games; cursor drawn with GDI, none on HDR screens) and fall back to WGC when the screen is on another GPU. Windows use WGC |
 | Monitor capture | Complete | `core/capture.rs`, `core/controller.rs` `resolve_target` | Primary by default. Looked up again by device name after display changes |
 | Window capture (exe and title) | Complete | `core/wnd.rs`, `core/controller.rs` | Holds the last frame while minimized. Follows resizes |
 | Resolution | Complete | `core/scale.rs` (D3D11 video processor), `core/settings.rs` | Native monitor res by default, or custom W×H (even, ≤16384). Stretch or Fit for other aspect ratios (stretched 4:3) |
