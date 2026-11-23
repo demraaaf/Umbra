@@ -1,0 +1,15 @@
+[package]
+name = "umbra-cli"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "umbra-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+umbra-core = { path = "../umbra-core" }

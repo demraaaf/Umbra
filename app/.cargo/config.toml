@@ -1,0 +1,4 @@
+# Paths are relative to the `app` folder. The files are fetched into `third_party` (see README).
+[env]
+FFMPEG_DIR = { value = "../third_party/ffmpeg", relative = true }
+LIBCLANG_PATH = { value = "../third_party/libclang", relative = true }

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Umbra",
+  "version": "1.0.0",
+  "identifier": "app.umbra.clipper",
+  "build": {
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Umbra",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#0a0a0a"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; media-src 'self' blob: asset: http://asset.localhost http://127.0.0.1:*; font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Offline game clipper",
+    "publisher": "Umbra contributors",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
+      }
+    },
+    "resources": {
+      "../../../third_party/ffmpeg/bin/avcodec-62.dll": "avcodec-62.dll",
+      "../../../third_party/ffmpeg/bin/avformat-62.dll": "avformat-62.dll",
+      "../../../third_party/ffmpeg/bin/avutil-60.dll": "avutil-60.dll",
+      "../../../third_party/ffmpeg/bin/swresample-6.dll": "swresample-6.dll",
+      "../../../third_party/ffmpeg/bin/swscale-9.dll": "swscale-9.dll",
+      "../../../third_party/ffmpeg/LICENSE.txt": "licenses/FFmpeg-LICENSE.txt"
+    }
+  }
+}

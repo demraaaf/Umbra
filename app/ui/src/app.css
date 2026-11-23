@@ -1,0 +1,404 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/geist';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * The shadcn-svelte "nova" components are written against `data-checked`, `data-open` and
+ * friends, while bits-ui reports state as `data-state="..."` and `data-orientation`. These
+ * aliases make both spellings work, so the components render their real states.
+ */
+@custom-variant data-checked (&:is([data-state='checked'], [data-checked]));
+@custom-variant data-unchecked (&:is([data-state='unchecked'], [data-unchecked]));
+@custom-variant data-open (&:is([data-state='open'], [data-state='delayed-open'], [data-open]));
+@custom-variant data-closed (&:is([data-state='closed'], [data-closed]));
+@custom-variant data-horizontal (&:is([data-orientation='horizontal'], [data-horizontal]));
+@custom-variant data-vertical (&:is([data-orientation='vertical'], [data-vertical]));
+
+/*
+ * Umbra design tokens: the single source for palette, spacing, radii, type and motion.
+ *
+ * Rules (plan.md, "Design direction"):
+ *   - Black, white and a tight grey scale. Colour is used in exactly two places:
+ *       red   = danger (delete, discard, error)
+ *       green = confirmation (saved, applied) and the "recording" dot
+ *   - 4px spacing grid, small radii, one sans face with tabular numerals, dark only.
+ *
+ * Greys are chroma-0 neutrals. Text greys are chosen to keep AA contrast on every surface
+ * they sit on (>= 4.5:1 on --surface-selected, the lightest surface used behind text).
+ */
+:root {
+	color-scheme: dark;
+
+	/* ---------- Surfaces (dark to light) ---------- */
+	--surface-chrome: #070707; /* titlebar, sidebar, status strip */
+	--surface-canvas: #0d0d0d; /* main content area */
+	--surface-panel: #121212; /* inspector, toolbars, popovers */
+	--surface-raised: #181818; /* controls, hover */
+	--surface-selected: #212121; /* selected rows, pressed */
+	--surface-on: #303030; /* toggled-on segments and pressed icon buttons */
+
+	/* ---------- Lines ---------- */
+	--line: #242424; /* hairline dividers */
+	--line-strong: #333333; /* panel edges, hovered cards */
+	--line-control: #404040; /* form control outlines */
+
+	/* ---------- Text ---------- */
+	--text: #ededed;
+	--text-muted: #a3a3a3; /* 7.9:1 on canvas */
+	--text-subtle: #8c8c8c; /* 5.7:1 on canvas, 4.7:1 on selected */
+
+	/* ---------- The only two colours ---------- */
+	--danger: #f87171; /* text/icon on dark */
+	--danger-solid: #dc2626;
+	--danger-solid-fg: #ffffff;
+	--danger-tint: rgb(248 113 113 / 0.12);
+	--success: #4ade80; /* text/icon on dark */
+	--success-solid: #22c55e;
+	--success-tint: rgb(74 222 128 / 0.12);
+	--mark: #f5c04a; /* bookmarks in recordings */
+
+	/* ---------- Focus ---------- */
+	--focus: #f5f5f5;
+
+	/* ---------- shadcn semantic mapping ---------- */
+	--background: var(--surface-canvas);
+	--foreground: var(--text);
+	--card: var(--surface-panel);
+	--card-foreground: var(--text);
+	--popover: var(--surface-panel);
+	--popover-foreground: var(--text);
+	--primary: #ededed;
+	--primary-foreground: #0a0a0a;
+	--secondary: var(--surface-raised);
+	--secondary-foreground: var(--text);
+	--muted: var(--surface-raised);
+	--muted-foreground: var(--text-muted);
+	--accent: var(--surface-selected);
+	--accent-foreground: var(--text);
+	--destructive: var(--danger);
+	--border: var(--line);
+	--input: var(--line-control);
+	--ring: var(--focus);
+	--chart-1: #ededed;
+	--chart-2: #a3a3a3;
+	--chart-3: #737373;
+	--chart-4: #525252;
+	--chart-5: #333333;
+	--sidebar: var(--surface-chrome);
+	--sidebar-foreground: var(--text);
+	--sidebar-primary: #ededed;
+	--sidebar-primary-foreground: #0a0a0a;
+	--sidebar-accent: var(--surface-selected);
+	--sidebar-accent-foreground: var(--text);
+	--sidebar-border: var(--line);
+	--sidebar-ring: var(--focus);
+
+	/* ---------- 4px spacing scale (mirrors Tailwind's --spacing: 4px) ---------- */
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-5: 20px;
+	--space-6: 24px;
+	--space-8: 32px;
+	--space-10: 40px;
+	--space-12: 48px;
+	--space-16: 64px;
+
+	/* ---------- Radii: small ---------- */
+	--radius: 4px;
+
+	/* ---------- Layout ---------- */
+	--titlebar-h: 32px;
+	--sidebar-w: 176px;
+	--sidebar-w-compact: 48px;
+	--panel-w: 256px;
+
+	/* ---------- Motion (functional only, 120-180ms) ---------- */
+	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+	--dur-fast: 120ms;
+	--dur-base: 150ms;
+	--dur-slow: 180ms;
+}
+
+@theme {
+	--font-sans:
+		'Geist Variable', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+
+	/* 4px grid */
+	--spacing: 4px;
+
+	/* Compact, fixed type scale (ratio ~1.15). Body copy in the UI is 13px. */
+	--text-xs: 12px;
+	--text-xs--line-height: 16px;
+	--text-sm: 13px;
+	--text-sm--line-height: 20px;
+	--text-base: 14px;
+	--text-base--line-height: 20px;
+	--text-lg: 16px;
+	--text-lg--line-height: 24px;
+	--text-xl: 18px;
+	--text-xl--line-height: 24px;
+	--text-2xl: 22px;
+	--text-2xl--line-height: 28px;
+
+	/* Small radii */
+	--radius-xs: 2px;
+	--radius-sm: 2px;
+	--radius-md: 4px;
+	--radius-lg: 4px;
+	--radius-xl: 6px;
+	--radius-2xl: 6px;
+	--radius-3xl: 8px;
+	--radius-4xl: 8px;
+
+	/* Motion defaults used by every `transition-*` utility */
+	--default-transition-duration: 150ms;
+	--default-transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	--color-chart-1: var(--chart-1);
+	--color-chart-2: var(--chart-2);
+	--color-chart-3: var(--chart-3);
+	--color-chart-4: var(--chart-4);
+	--color-chart-5: var(--chart-5);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-ring: var(--sidebar-ring);
+
+	/* Umbra additions */
+	--color-chrome: var(--surface-chrome);
+	--color-canvas: var(--surface-canvas);
+	--color-panel: var(--surface-panel);
+	--color-raised: var(--surface-raised);
+	--color-selected: var(--surface-selected);
+	--color-on: var(--surface-on);
+	--color-line: var(--line);
+	--color-line-strong: var(--line-strong);
+	--color-line-control: var(--line-control);
+	--color-subtle: var(--text-subtle);
+	--color-danger: var(--danger);
+	--color-danger-solid: var(--danger-solid);
+	--color-danger-tint: var(--danger-tint);
+	--color-success: var(--success);
+	--color-success-solid: var(--success-solid);
+	--color-success-tint: var(--success-tint);
+	--color-focus: var(--focus);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+		scrollbar-width: thin;
+		scrollbar-color: var(--line-control) transparent;
+	}
+
+	html,
+	body,
+	#app {
+		height: 100%;
+		margin: 0;
+	}
+
+	html {
+		font-size: 16px;
+		background: var(--surface-chrome);
+		-webkit-text-size-adjust: 100%;
+		text-rendering: optimizeLegibility;
+	}
+
+	body {
+		@apply bg-background text-foreground font-sans text-sm;
+		/* clip, not hidden: the shell must never scroll, not even via scrollIntoView. */
+		overflow: clip;
+		overscroll-behavior: none;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		/* The app behaves like a native tool: chrome is not text-selectable. */
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	/* Text people need to copy (paths, file names, error messages). */
+	.selectable,
+	input,
+	textarea {
+		user-select: text;
+		-webkit-user-select: text;
+	}
+
+	/* Timecodes and numeric readouts line up when they change. */
+	.tnum {
+		font-variant-numeric: tabular-nums;
+		font-feature-settings: 'tnum' 1;
+	}
+
+	button,
+	[role='button'],
+	summary,
+	select,
+	label[for],
+	[role='radio'],
+	[role='switch'],
+	[role='tab'] {
+		cursor: pointer;
+	}
+
+	button:disabled,
+	[aria-disabled='true'] {
+		cursor: not-allowed;
+	}
+
+	/* Browser surfaces that ship unthemed by default. */
+	::selection {
+		background: #e5e5e5;
+		color: #0a0a0a;
+	}
+
+	::-webkit-scrollbar {
+		width: 8px;
+		height: 8px;
+	}
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	::-webkit-scrollbar-thumb {
+		background: var(--line-control);
+		border-radius: 4px;
+		border: 2px solid transparent;
+		background-clip: content-box;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: #5a5a5a;
+		background-clip: content-box;
+		border: 2px solid transparent;
+	}
+	::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+
+	/* Keyboard focus: a crisp white ring, never a glow. shadcn controls draw their own ring. */
+	:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
+	}
+
+	input[type='number'] {
+		appearance: textfield;
+		-moz-appearance: textfield;
+	}
+	input[type='number']::-webkit-outer-spin-button,
+	input[type='number']::-webkit-inner-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
+	input::placeholder,
+	textarea::placeholder {
+		color: var(--text-subtle);
+		opacity: 1;
+	}
+
+	img,
+	video {
+		-webkit-user-drag: none;
+	}
+
+	h1,
+	h2,
+	h3,
+	h4 {
+		text-wrap: balance;
+	}
+}
+
+/*
+ * Reduced motion: keep state changes readable (opacity, colour) but remove movement.
+ * Transforms and keyframes collapse to a near-instant step.
+ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 1ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 1ms !important;
+		scroll-behavior: auto !important;
+	}
+}
+
+/* ---------- Toasts (svelte-sonner) ---------- */
+[data-sonner-toaster] {
+	--normal-bg: var(--surface-panel);
+	--normal-text: var(--text);
+	--normal-border: var(--line-strong);
+	--border-radius: 6px;
+	--width: 320px;
+	font-family: var(--font-sans);
+}
+[data-sonner-toast] {
+	padding: 12px !important;
+	gap: 8px !important;
+	font-size: 13px !important;
+	line-height: 20px !important;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.5) !important;
+}
+[data-sonner-toast] [data-title] {
+	font-weight: 500;
+	color: var(--text);
+}
+[data-sonner-toast] [data-description] {
+	color: var(--text-muted) !important;
+	font-size: 12px;
+	line-height: 16px;
+	font-variant-numeric: tabular-nums;
+}
+[data-sonner-toast] [data-button] {
+	height: 24px !important;
+	padding: 0 8px !important;
+	border-radius: 4px !important;
+	font-size: 12px !important;
+	font-weight: 500;
+	background: var(--surface-selected) !important;
+	color: var(--text) !important;
+	transition:
+		background-color 120ms var(--ease-out),
+		transform 120ms var(--ease-out);
+}
+[data-sonner-toast] [data-button]:hover {
+	background: #2b2b2b !important;
+}
+[data-sonner-toast] [data-button]:active {
+	transform: scale(0.97);
+}
+[data-sonner-toast] [data-icon] {
+	margin: 0 !important;
+}

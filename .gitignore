@@ -1,0 +1,30 @@
+# Downloaded build dependencies (FFmpeg, libclang). See README for how to fetch them.
+/third_party/
+
+# Rust
+/app/target/
+
+# Node
+node_modules/
+/app/ui/dist/
+/app/ui/.svelte-kit/
+
+# Test recordings
+/out/
+*.mp4
+*.mkv
+
+# Extra build folders for parallel work
+/app/target-*/
+/app/crates/umbra-app/gen/
+/app/crates/umbra-app/target-*/
+
+# Development notes kept locally
+/docs/
+
+# Editor and tool folders
+/.idea/
+/brag-output/
+
+# Kept on this PC only.
+archive/

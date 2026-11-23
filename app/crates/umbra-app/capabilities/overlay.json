@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "The small windows over games: messages and the status badge. They only listen for what to show.",
+  "windows": ["overlay", "status-overlay"],
+  "permissions": ["core:event:default"]
+}
